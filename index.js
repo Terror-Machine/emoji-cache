@@ -8,6 +8,7 @@ class OptimizedEmojiCache {
     this.emojiFilesDir = path.join(__dirname, "./emoji/");
     this.emojiJsonByBrand = { apple: 'emoji-apple-image.json' };
     this.fileHandles = new Map();
+    this.fileContent = new Map();
     this.initialized = false;
     this.stats = {
       hits: 0,
@@ -17,7 +18,7 @@ class OptimizedEmojiCache {
     this.popularEmojis = [
       '2614', '2615', '2648', '2649', '2650',
       '2661', '2662', '2663', '2664', '2665',
-      '26A0', '26A1', '2600', '2601', '2602', 
+      '26A0', '26A1', '2600', '2601', '2602',
       '2764', '2665', '2666', '2667', '2668'
     ];
   }
@@ -28,6 +29,8 @@ class OptimizedEmojiCache {
         const filePath = path.resolve(this.emojiFilesDir, filename);
         if (fs.existsSync(filePath)) {
           this.fileHandles.set(brand, { filePath });
+          const content = await fs.promises.readFile(filePath, 'utf8');
+          this.fileContent.set(brand, content);
           console.log(`Emoji cache initialized for ${brand}`);
         } else {
           console.warn(`Emoji file tidak ditemukan: ${filePath}`);
@@ -43,27 +46,20 @@ class OptimizedEmojiCache {
   async preloadPopularEmojis() {
     console.log(`Preloading ${this.popularEmojis.length} popular emojis...`);
     try {
-      const appleBrand = this.fileHandles.get('apple');
-      if (!appleBrand) return;
-      const content = await fs.promises.readFile(appleBrand.filePath, 'utf8');
-      let data = JSON.parse(content);
       let preloadedCount = 0;
       for (const unicode of this.popularEmojis) {
-        if (data[unicode]) {
-          this.cache.set(`apple:${unicode}`, data[unicode]);
-          preloadedCount++;
-        }
+        const base64 = this.getEmojiSync('apple', unicode);
+        if (base64) preloadedCount++;
       }
       console.log(`Preloaded ${preloadedCount}/${this.popularEmojis.length} popular emojis`);
-      data = null;
-      if (global.gc) global.gc();
-
     } catch (error) {
       console.warn('Could not preload popular emojis:', error.message);
     }
   }
-  async getEmoji(brand, unicode) {
-    if (!this.initialized) await this.init();
+  getEmojiSync(brand, unicode) {
+    if (!this.initialized) {
+      throw new Error('Emoji cache not initialized. Call init() first.');
+    }
     this.stats.totalRequests++;
     const cacheKey = `${brand}:${unicode}`;
     if (this.cache.has(cacheKey)) {
@@ -72,23 +68,17 @@ class OptimizedEmojiCache {
       return this.cache.get(cacheKey);
     }
     this.stats.misses++;
-    try {
-      const fileInfo = this.fileHandles.get(brand);
-      if (!fileInfo) return null;
-      const base64Data = await this.readEmojiFromFile(fileInfo.filePath, unicode);
-      if (base64Data) {
-        this.addToCache(cacheKey, base64Data);
-        return base64Data;
-      }
-      return null;
-    } catch (error) {
-      console.error(`Error getting emoji ${unicode}:`, error);
-      return null;
+    const content = this.fileContent.get(brand);
+    if (!content) return null;
+    const base64Data = this.extractEmojiFromContent(content, unicode);
+    if (base64Data) {
+      this.addToCache(cacheKey, base64Data);
+      return base64Data;
     }
+    return null;
   }
-  async readEmojiFromFile(filePath, unicode) {
+  extractEmojiFromContent(content, unicode) {
     try {
-      const content = await fs.promises.readFile(filePath, 'utf8');
       const searchPattern = `"${unicode}":`;
       const startIndex = content.indexOf(searchPattern);
       if (startIndex === -1) return null;
@@ -111,7 +101,7 @@ class OptimizedEmojiCache {
       }
       return content.substring(quoteStart, valueEnd);
     } catch (error) {
-      console.error(`Error reading emoji ${unicode} from file:`, error);
+      console.error(`Error extracting emoji ${unicode}:`, error);
       return null;
     }
   }
@@ -148,7 +138,7 @@ function createBrandProxy(brand) {
   return new Proxy({}, {
     get: function (target, prop) {
       if (typeof prop === 'string') {
-        return optimizedEmojiCache.getEmoji(brand, prop);
+        return optimizedEmojiCache.getEmojiSync(brand, prop);
       }
       return undefined;
     },
@@ -157,6 +147,12 @@ function createBrandProxy(brand) {
     },
     ownKeys: function (target) {
       return [];
+    },
+    getOwnPropertyDescriptor: function (target, prop) {
+      return {
+        enumerable: true,
+        configurable: true
+      };
     }
   });
 }
